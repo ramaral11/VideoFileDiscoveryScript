@@ -33,7 +33,7 @@ VIDEO_EXTENSIONS = {
 }
 
 class SlateDetector:
-    def __init__(self, input_folder, output_folder, frames_to_check=60, threshold=0.8, target_frame=20):
+    def __init__(self, input_folder, output_folder, frames_to_check=60, threshold=0.8, target_frame=20, once_per_folder=False):
         """
         Initialize the slate detector.
         
@@ -43,13 +43,16 @@ class SlateDetector:
             frames_to_check: Number of frames to check (2 seconds @ 30fps = 60 frames)
             threshold: Confidence threshold for slate detection (0-1)
             target_frame: Specific frame to check first (default: 20)
+            once_per_folder: Only save first slate per subfolder (default: False)
         """
         self.input_folder = Path(input_folder).resolve()
         self.output_folder = Path(output_folder).resolve()
         self.frames_to_check = frames_to_check
         self.threshold = threshold
         self.target_frame = target_frame
+        self.once_per_folder = once_per_folder
         self.metadata = {}
+        self.saved_folders = set()  # Track folders that already have a slate saved
         
         # Create output folder if it doesn't exist
         self.output_folder.mkdir(parents=True, exist_ok=True)
@@ -198,22 +201,37 @@ class SlateDetector:
             
             # If slate found with sufficient confidence
             if best_confidence >= self.threshold:
-                # Generate unique filename
-                video_hash = hashlib.md5(str(video_path).encode()).hexdigest()[:8]
-                png_filename = f"slate_{video_hash}_{best_frame_number:04d}.png"
-                png_path = self.output_folder / png_filename
-                
-                # Save the slate frame
-                cv2.imwrite(str(png_path), best_slate_frame)
-                
                 result['slate_found'] = True
                 result['confidence'] = float(best_confidence)
                 result['frame_number'] = best_frame_number
-                result['png_filename'] = png_filename
                 result['timestamp'] = best_frame_number / fps
                 
-                logger.info(f"Slate found in {relative_path} at frame {best_frame_number} "
-                          f"(confidence: {best_confidence:.2f})")
+                # Check if we should save this slate image
+                video_folder = video_path.parent
+                should_save = True
+                
+                if self.once_per_folder:
+                    # Check if we've already saved a slate from this folder
+                    if video_folder in self.saved_folders:
+                        should_save = False
+                        logger.info(f"Slate found in {relative_path} but skipping save (already have slate from this folder)")
+                    else:
+                        self.saved_folders.add(video_folder)
+                
+                if should_save:
+                    # Generate unique filename
+                    video_hash = hashlib.md5(str(video_path).encode()).hexdigest()[:8]
+                    png_filename = f"slate_{video_hash}_{best_frame_number:04d}.png"
+                    png_path = self.output_folder / png_filename
+                    
+                    # Save the slate frame
+                    cv2.imwrite(str(png_path), best_slate_frame)
+                    result['png_filename'] = png_filename
+                    
+                    logger.info(f"Slate found and saved in {relative_path} at frame {best_frame_number} "
+                              f"(confidence: {best_confidence:.2f})")
+                else:
+                    result['png_filename'] = None  # Slate found but not saved
             
         except Exception as e:
             result['error'] = str(e)
@@ -277,7 +295,7 @@ class SlateDetector:
         # Also create a simple mapping file
         mapping = {}
         for result in results:
-            if result['slate_found']:
+            if result['slate_found'] and result.get('png_filename'):
                 mapping[result['png_filename']] = {
                     'video_path': result['video_path'],
                     'frame_number': result['frame_number'],
@@ -333,6 +351,11 @@ def main():
         default=20,
         help='Specific frame number to check first (default: 20, ~0.8s at 25fps)'
     )
+    parser.add_argument(
+        '--once',
+        action='store_true',
+        help='Only save the first slate image per subfolder (all slates still registered in metadata)'
+    )
     
     args = parser.parse_args()
     
@@ -351,7 +374,8 @@ def main():
         args.output,
         args.frames,
         args.threshold,
-        args.target_frame
+        args.target_frame,
+        args.once
     )
     
     # Find video files
@@ -376,6 +400,9 @@ def main():
     print("="*50)
     print(f"Total videos scanned: {metadata['total_videos_scanned']}")
     print(f"Slates found: {metadata['slates_found']}")
+    if detector.once_per_folder:
+        images_saved = sum(1 for r in results if r['slate_found'] and r.get('png_filename'))
+        print(f"Images saved: {images_saved} (--once mode: first per folder)")
     print(f"Output folder: {detector.output_folder}")
     print(f"Metadata file: {detector.output_folder / 'slate_metadata.json'}")
     print(f"Mapping file: {detector.output_folder / 'slate_mapping.json'}")
