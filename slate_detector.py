@@ -93,13 +93,13 @@ class SlateDetector:
         # Calculate white pixels ratio (potential text)
         white_pixels_ratio = np.sum(binary == 255) / binary.size
         
-        # Detect if it's a slate:
-        # - Most pixels should be black (>70%)
-        # - Some white pixels for text (1-30%)
+        # Detect if it's a slate (more lenient criteria):
+        # - Most pixels should be black (>50%)
+        # - Some white pixels for text (0.5-40%)
         # - High contrast between black and white areas
         is_slate = (
-            black_pixels_ratio > 0.7 and
-            0.01 < white_pixels_ratio < 0.3
+            black_pixels_ratio > 0.5 and
+            0.005 < white_pixels_ratio < 0.4
         )
         
         # Calculate confidence score
@@ -171,6 +171,11 @@ class SlateDetector:
                     best_frame_number = frame_num
             
             cap.release()
+            
+            # Log diagnostic info for debugging
+            if best_confidence > 0:
+                logger.debug(f"Best slate candidate in {relative_path}: frame {best_frame_number}, "
+                           f"confidence {best_confidence:.3f} (threshold: {self.threshold})")
             
             # If slate found with sufficient confidence
             if best_confidence >= self.threshold:
@@ -298,8 +303,17 @@ def main():
         default=None,
         help='Number of parallel workers (default: auto)'
     )
+    parser.add_argument(
+        '-d', '--debug',
+        action='store_true',
+        help='Enable debug logging to see detection details'
+    )
     
     args = parser.parse_args()
+    
+    # Enable debug logging if requested
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
     
     # Validate input folder
     if not os.path.exists(args.input_folder):
