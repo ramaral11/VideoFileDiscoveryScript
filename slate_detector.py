@@ -33,7 +33,7 @@ VIDEO_EXTENSIONS = {
 }
 
 class SlateDetector:
-    def __init__(self, input_folder, output_folder, frames_to_check=60, threshold=0.8):
+    def __init__(self, input_folder, output_folder, frames_to_check=60, threshold=0.8, target_frame=20):
         """
         Initialize the slate detector.
         
@@ -42,11 +42,13 @@ class SlateDetector:
             output_folder: Folder to save PNG images and metadata
             frames_to_check: Number of frames to check (2 seconds @ 30fps = 60 frames)
             threshold: Confidence threshold for slate detection (0-1)
+            target_frame: Specific frame to check first (default: 20)
         """
         self.input_folder = Path(input_folder).resolve()
         self.output_folder = Path(output_folder).resolve()
         self.frames_to_check = frames_to_check
         self.threshold = threshold
+        self.target_frame = target_frame
         self.metadata = {}
         
         # Create output folder if it doesn't exist
@@ -150,25 +152,42 @@ class SlateDetector:
             fps = cap.get(cv2.CAP_PROP_FPS) or 30  # Default to 30 fps if not available
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
-            # Calculate how many frames to check (first 2 seconds)
-            frames_to_check = min(self.frames_to_check, int(fps * 2), total_frames)
+            # Calculate target frame (default: frame 20 at ~0.8 seconds for 25fps)
+            # This avoids fade-ins and catches the slate before the 1s black transition
+            target_frame = min(self.target_frame, total_frames - 1)
             
             best_slate_frame = None
             best_confidence = 0.0
             best_frame_number = -1
             
-            # Check frames
-            for frame_num in range(frames_to_check):
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
+            # First, try to check the target frame (frame 20)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ret, frame = cap.read()
+            if ret:
                 is_slate, confidence = self.is_slate_frame(frame)
-                
-                if is_slate and confidence > best_confidence:
+                if is_slate and confidence >= self.threshold:
+                    # Found a good slate at the target frame
                     best_slate_frame = frame.copy()
                     best_confidence = confidence
-                    best_frame_number = frame_num
+                    best_frame_number = target_frame
+                    logger.debug(f"Found slate at target frame {target_frame} with confidence {confidence:.3f}")
+            
+            # If no good slate at target frame, check other frames
+            if best_confidence < self.threshold:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to beginning
+                frames_to_check = min(self.frames_to_check, int(fps * 2), total_frames)
+                
+                for frame_num in range(frames_to_check):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    is_slate, confidence = self.is_slate_frame(frame)
+                    
+                    if is_slate and confidence > best_confidence:
+                        best_slate_frame = frame.copy()
+                        best_confidence = confidence
+                        best_frame_number = frame_num
             
             cap.release()
             
@@ -308,6 +327,12 @@ def main():
         action='store_true',
         help='Enable debug logging to see detection details'
     )
+    parser.add_argument(
+        '--target-frame',
+        type=int,
+        default=20,
+        help='Specific frame number to check first (default: 20, ~0.8s at 25fps)'
+    )
     
     args = parser.parse_args()
     
@@ -325,7 +350,8 @@ def main():
         args.input_folder,
         args.output,
         args.frames,
-        args.threshold
+        args.threshold,
+        args.target_frame
     )
     
     # Find video files
